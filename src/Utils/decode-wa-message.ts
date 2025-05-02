@@ -1,11 +1,28 @@
 import { Boom } from '@hapi/boom'
-import { Logger } from 'pino'
 import { proto } from '../../WAProto'
 import { SignalRepository, WAMessageKey } from '../Types'
-import { areJidsSameUser, BinaryNode, isJidBroadcast, isJidGroup, isJidNewsletter, isJidStatusBroadcast, isJidUser, isLidUser } from '../WABinary'
+import { areJidsSameUser, BinaryNode, isJidBroadcast, isJidGroup, isJidMetaIa, isJidNewsletter, isJidStatusBroadcast, isJidUser, isLidUser } from '../WABinary'
 import { unpadRandomMax16 } from './generics'
+import { ILogger } from './logger'
 
 export const NO_MESSAGE_FOUND_ERROR_TEXT = 'Message absent from node'
+export const MISSING_KEYS_ERROR_TEXT = 'Key used already or never filled'
+
+export const NACK_REASONS = {
+	ParsingError: 487,
+	UnrecognizedStanza: 488,
+	UnrecognizedStanzaClass: 489,
+	UnrecognizedStanzaType: 490,
+	InvalidProtobuf: 491,
+	InvalidHostedCompanionStanza: 493,
+	MissingMessageSecret: 495,
+	SignalErrorOldCounter: 496,
+	MessageDeletedOnPeer: 499,
+	UnhandledError: 500,
+	UnsupportedAdminRevoke: 550,
+	UnsupportedLIDGroup: 551,
+	DBOperationFailed: 552
+}
 
 type MessageType = 'chat' | 'peer_broadcast' | 'other_broadcast' | 'group' | 'direct_peer_status' | 'other_status' | 'newsletter'
 
@@ -30,22 +47,9 @@ export function decodeMessageNode(
 	const isMe = (jid: string) => areJidsSameUser(jid, meId)
 	const isMeLid = (jid: string) => areJidsSameUser(jid, meLid)
 
-	if(isJidUser(from)) {
-		if(recipient) {
-			if(!isMe(from)) {
-				throw new Boom('receipient present, but msg not from me', { data: stanza })
-			}
-
-			chatId = recipient
-		} else {
-			chatId = from
-		}
-
-		msgType = 'chat'
-		author = from
-	} else if(isLidUser(from)) {
-		if(recipient) {
-			if(!isMeLid(from)) {
+	if(isJidUser(from) || isLidUser(from)) {
+		if(recipient && !isJidMetaIa(recipient)) {
+			if(!isMe(from) && !isMeLid(from)) {
 				throw new Boom('receipient present, but msg not from me', { data: stanza })
 			}
 
@@ -119,7 +123,7 @@ export const decryptMessageNode = (
 	meId: string,
 	meLid: string,
 	repository: SignalRepository,
-	logger: Logger
+	logger: ILogger
 ) => {
 	const { fullMessage, author, sender } = decodeMessageNode(stanza, meId, meLid)
 	return {
@@ -132,7 +136,7 @@ export const decryptMessageNode = (
 				for(const { tag, attrs, content } of stanza.content) {
 					if(tag === 'verified_name' && content instanceof Uint8Array) {
 						const cert = proto.VerifiedNameCertificate.decode(content)
-						const details = proto.VerifiedNameCertificate.Details.decode(cert.details)
+						const details = proto.VerifiedNameCertificate.Details.decode(cert.details!)
 						fullMessage.verifiedBizName = details.verifiedName
 					}
 
